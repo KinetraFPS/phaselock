@@ -457,7 +457,9 @@ function build(){
   N.master = ctx.createGain(); N.master.gain.value = 0;
   N.comp = ctx.createDynamicsCompressor(); N.comp.threshold.value = -14; N.comp.ratio.value = 3; N.comp.attack.value = .02; N.comp.release.value = .3;
   N.master.connect(N.comp); N.comp.connect(ctx.destination);
-  N.split = ctx.createChannelSplitter(2); N.comp.connect(N.split);
+  // scope tap: lowpassed so the trace follows tones and music, not hiss
+  N.scopeLp = ctx.createBiquadFilter(); N.scopeLp.type = 'lowpass'; N.scopeLp.frequency.value = 420; N.scopeLp.Q.value = .5;
+  N.split = ctx.createChannelSplitter(2); N.comp.connect(N.scopeLp); N.scopeLp.connect(N.split);
   N.anL = ctx.createAnalyser(); N.anR = ctx.createAnalyser(); N.anL.fftSize = N.anR.fftSize = 1024;
   N.split.connect(N.anL, 0); N.split.connect(N.anR, 1);
 
@@ -853,7 +855,7 @@ function toast(msg, undo){
 /* ---------- scope ---------- */
 const cv = $('cv'), cx = cv.getContext('2d');
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-let W = 0, H = 0, dpr = 1, agc = .05, bufL, bufR;
+let W = 0, H = 0, dpr = 1, agc = .05, bufL, bufR, trails = [];
 function size(){ dpr = Math.min(2, devicePixelRatio || 1); const r = cv.getBoundingClientRect(); W = cv.width = Math.round(r.width * dpr); H = cv.height = Math.round(r.height * dpr); }
 new ResizeObserver(size).observe(cv); size();
 let frame = 0;
@@ -861,7 +863,7 @@ function draw(ts){
   requestAnimationFrame(draw);
   if (stealth || !W) return;
   if (reduce && (frame++ % 4)) return;
-  cx.fillStyle = 'rgba(12,14,19,0.2)'; cx.fillRect(0, 0, W, H);
+  cx.clearRect(0, 0, W, H);
   const cxm = W / 2, cym = H * .54, R = Math.min(W, H) * .36;
   // graticule
   cx.lineWidth = dpr; cx.strokeStyle = 'rgba(138,147,164,0.05)';
@@ -874,15 +876,23 @@ function draw(ts){
     let pk = 0; for (let i = 0; i < bufL.length; i++){ pk = Math.max(pk, Math.abs(bufL[i]), Math.abs(bufR[i])); }
     agc += (Math.max(pk, .01) - agc) * .04;
     const sc = R / (agc * 1.25);
-    cx.save(); cx.shadowColor = 'rgba(168,220,255,0.55)'; cx.shadowBlur = 10 * dpr;
-    cx.strokeStyle = 'rgba(168,220,255,0.55)'; cx.lineWidth = 1.15 * dpr; cx.beginPath();
+    const pts = new Float32Array(bufL.length * 2);
     for (let i = 0; i < bufL.length; i++){
       const l = bufL[i], r = bufR[i];
-      const x = cxm + (r - l) * .7071 * sc, y = cym - (l + r) * .7071 * sc;
-      i ? cx.lineTo(x, y) : cx.moveTo(x, y);
+      pts[i*2] = cxm + (r - l) * .7071 * sc; pts[i*2+1] = cym - (l + r) * .7071 * sc;
     }
-    cx.stroke(); cx.restore();
+    trails.push(pts); if (trails.length > 6) trails.shift();
+    cx.save(); cx.lineJoin = 'round'; cx.lineWidth = 1.15 * dpr;
+    trails.forEach((p, k) => {
+      const last = k === trails.length - 1, a = last ? .7 : .05 + .08 * k / trails.length;
+      cx.shadowBlur = last ? 8 * dpr : 0; cx.shadowColor = 'rgba(168,220,255,0.5)';
+      cx.strokeStyle = `rgba(168,220,255,${a})`; cx.beginPath();
+      for (let i = 0; i < p.length; i += 2) i ? cx.lineTo(p[i], p[i+1]) : cx.moveTo(p[i], p[i+1]);
+      cx.stroke();
+    });
+    cx.restore();
   } else {
+    trails.length = 0;
     const t = (ts || 0) / 1000, r = R * (.55 + .03 * Math.sin(t * .7));
     cx.strokeStyle = 'rgba(168,220,255,0.35)'; cx.lineWidth = 1.2 * dpr;
     cx.beginPath(); cx.ellipse(cxm, cym, r, r * (.35 + .1 * Math.sin(t * .4)), t * .15, 0, Math.PI * 2); cx.stroke();
